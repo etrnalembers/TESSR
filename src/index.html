@@ -1,12 +1,287 @@
+
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hello World</title>
-  </head>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orange Pi Storage & NPU Manager</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #eee; background-color: #1e1e1e; margin: 0; }
+        .container { max-width: 1000px; margin: 20px auto; padding: 20px; background-color: #2a2a2a; border-radius: 8px; }
+        h1, h2, h3 { color: #00aaff; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .grid-container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .section { background-color: #333; padding: 15px; border-radius: 5px; }
+        button { background-color: #007acc; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-size: 1em; }
+        button:hover { background-color: #005fa3; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        pre { background-color: #1e1e1e; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; color: #ddd; }
+        input, select { padding: 8px; border-radius: 4px; border: 1px solid #555; background-color: #2a2a2a; color: #eee; width: calc(100% - 20px); }
+        .file-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #444; cursor: pointer; }
+        .file-item:hover { background-color: #4a4a4a; }
+        .file-item.selected { background-color: #007acc; }
+        .file-actions button { margin-left: 5px; font-size: 0.8em; padding: 5px 8px;}
+        .log-panel { margin-top: 15px; background-color: #1e1e1e; padding: 10px; border-radius: 4px; height: 150px; overflow-y: scroll; font-family: monospace; }
+    </style>
+</head>
+<body>
 
-  <body>
-    <h1>Hello World</h1>
-  </body>
+    <div class="container">
+        <h1>Orange Pi - Hardware Manager</h1>
+
+        <div class="grid-container">
+            <div class="section">
+                <h2>System Information</h2>
+                <button onclick="fetchDisks()">Refresh Disk Info</button>
+                <div id="disks-info"></div>
+            </div>
+
+            <div class="section">
+                <h2>NPU Control Center</h2>
+                <button onclick="fetchNpuStatus()">Get NPU Status</button>
+                <button onclick="fetchNpuModels()">List NPU Models</button>
+                <pre id="npu-status"></pre>
+                <div id="npu-models"></div>
+            </div>
+        </div>
+
+        <div class="section" style="margin-top: 20px;">
+            <h2>File Explorer</h2>
+            <div>
+                <button onclick="navigateUp()">⬆️ Up a Directory</button>
+                <input type="text" id="current-path" readonly style="background-color:#444;">
+            </div>
+            <div id="file-browser" style="margin-top: 10px;"></div>
+            <hr>
+            <h3>File Actions</h3>
+            <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+                <input type="text" id="new-folder-name" placeholder="New folder name..." style="flex-grow: 1;">
+                <button onclick="createFolder()">Create Folder</button>
+                
+                <input type="file" id="file-upload">
+                <button onclick="uploadFile()">Upload File</button>
+            </div>
+        </div>
+
+        <div class="section" style="margin-top: 20px;">
+            <h2>Action Log</h2>
+            <div id="log-panel" class="log-panel"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentPath = '/';
+        let selectedFile = null;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchDisks();
+            fetchNpuStatus();
+            browseFiles(currentPath);
+        });
+
+        function log(message, type = 'info') {
+            const logPanel = document.getElementById('log-panel');
+            const entry = document.createElement('div');
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            entry.style.color = type === 'error' ? '#ff8c8c' : '#8cff8c';
+            logPanel.prepend(entry);
+        }
+
+        async function apiCall(url, options = {}) {
+            try {
+                const response = await fetch(url, options);
+                const data = await response.json();
+                if (!response.ok) {
+                    const errorMsg = data.error || `HTTP error! status: ${response.status}`;
+                    throw new Error(errorMsg);
+                }
+                log(`${options.method || 'GET'} ${url} - Success`, 'info');
+                return data;
+            } catch (error) {
+                log(error.message, 'error');
+                return null;
+            }
+        }
+
+        async function fetchDisks() {
+            const data = await apiCall('/api/system/disks');
+            if (!data) return;
+            const disksInfo = document.getElementById('disks-info');
+            disksInfo.innerHTML = data.map(disk => `
+                <div>
+                    <strong>${disk.mountpoint}</strong> (${disk.device}) - ${disk.fstype}
+                    <div style="background: #555; border-radius: 3px; overflow: hidden;"><div style="width:${disk.percent}%; background: #007acc; color: white; text-align: center;">${disk.percent}%</div></div>
+                    <small>${disk.used} / ${disk.total} used</small>
+                </div>
+            `).join('<br>');
+        }
+
+        async function fetchNpuStatus() {
+            const data = await apiCall('/api/npu/status');
+            if (!data) return;
+            document.getElementById('npu-status').textContent = JSON.stringify(data, null, 2);
+        }
+
+        async function fetchNpuModels() {
+            const data = await apiCall('/api/npu/models');
+            if (!data) return;
+            const modelsDiv = document.getElementById('npu-models');
+            modelsDiv.innerHTML = '<h3>Available Models</h3>' + data.map(model => `
+                <div>
+                    <span>${model.name} - <strong>${model.state}</strong></span>
+                    <button onclick="toggleModel('${model.name}', '${model.state}')" ${model.state === 'loading' ? 'disabled' : ''}>
+                        ${model.state === 'loaded' ? 'Unload' : 'Load'}
+                    </button>
+                    <button onclick="runInference('${model.name}')" ${model.state !== 'loaded' ? 'disabled' : ''}>Run Inference</button>
+                </div>
+            `).join('');
+        }
+
+        async function toggleModel(modelName, currentState) {
+            const action = currentState === 'loaded' ? 'unload' : 'load';
+            const data = await apiCall(`/api/npu/${action}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_name: modelName })
+            });
+            if (data && data.success) {
+                log(data.message);
+                fetchNpuModels(); // Refresh model list
+            }
+        }
+
+        async function runInference(modelName) {
+            const data = await apiCall('/api/npu/inference', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_name: modelName, input_data: "dummy_image.jpg" })
+            });
+            if (data) {
+                log(`Inference result for ${modelName}: ${JSON.stringify(data.results)}`);
+            }
+        }
+
+        async function browseFiles(path) {
+            const data = await apiCall(`/api/files/browse?path=${encodeURIComponent(path)}`);
+            if (!data) return;
+
+            currentPath = path;
+            document.getElementById('current-path').value = currentPath;
+            const fileBrowser = document.getElementById('file-browser');
+            fileBrowser.innerHTML = '';
+            
+            data.sort((a, b) => b.is_dir - a.is_dir || a.name.localeCompare(b.name));
+
+            data.forEach(item => {
+                const itemEl = document.createElement('div');
+                itemEl.className = 'file-item';
+                itemEl.textContent = `${item.is_dir ? '📁' : '📄'} ${item.name}`;
+                itemEl.onclick = (e) => {
+                    e.stopPropagation();
+                    if (item.is_dir) {
+                        browseFiles(item.path);
+                    } else {
+                        selectFile(itemEl, item.path);
+                    }
+                };
+                
+                const actions = document.createElement('div');
+                actions.className = 'file-actions';
+                
+                const renameBtn = document.createElement('button');
+                renameBtn.textContent = 'Rename';
+                renameBtn.onclick = (e) => { e.stopPropagation(); renameItem(item.path); };
+                
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = 'Delete';
+                deleteBtn.onclick = (e) => { e.stopPropagation(); deleteItem(item.path, item.is_dir); };
+
+                actions.appendChild(renameBtn);
+                actions.appendChild(deleteBtn);
+                itemEl.appendChild(actions);
+
+                fileBrowser.appendChild(itemEl);
+            });
+        }
+        
+        function navigateUp() {
+            if (currentPath === '/') return;
+            const parentPath = currentPath.substring(0, currentPath.lastIndexOf('/')) || '/';
+            browseFiles(parentPath);
+        }
+
+        async function createFolder() {
+            const folderName = document.getElementById('new-folder-name').value;
+            if (!folderName) {
+                log('Folder name cannot be empty.', 'error');
+                return;
+            }
+            const newPath = `${currentPath}/${folderName}`.replace('//', '/');
+            const data = await apiCall('/api/files/folder', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: newPath })
+            });
+            if (data) {
+                document.getElementById('new-folder-name').value = '';
+                browseFiles(currentPath);
+            }
+        }
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('file-upload');
+            if (fileInput.files.length === 0) {
+                log('Please select a file to upload.', 'error');
+                return;
+            }
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('path', currentPath);
+
+            const data = await apiCall('/api/files/upload', {
+                method: 'POST',
+                body: formData // No Content-Type header needed, browser sets it for FormData
+            });
+
+            if (data) {
+                fileInput.value = ''; // Reset file input
+                browseFiles(currentPath);
+            }
+        }
+        
+        async function renameItem(oldPath) {
+            const newName = prompt(`Enter new name for ${oldPath}:`);
+            if (!newName) return;
+            const parentDir = oldPath.substring(0, oldPath.lastIndexOf('/')) || '/';
+            const newPath = `${parentDir}/${newName}`.replace('//', '/');
+
+            const data = await apiCall('/api/files/manage', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: oldPath, destination: newPath })
+            });
+
+            if (data) {
+                browseFiles(currentPath);
+            }
+        }
+        
+        async function deleteItem(path, isDir) {
+            if (!confirm(`Are you sure you want to delete ${path}? This cannot be undone.`)) {
+                return;
+            }
+
+            const data = await apiCall('/api/files/manage', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: path })
+            });
+
+            if (data) {
+                browseFiles(currentPath);
+            }
+        }
+
+    </script>
+</body>
 </html>
