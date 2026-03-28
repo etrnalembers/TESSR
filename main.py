@@ -4,6 +4,7 @@ import psutil
 import shutil
 import random
 import subprocess
+import requests  # Import the requests library
 from flask import Flask, send_file, jsonify, request, abort
 from werkzeug.utils import secure_filename
 from celery.result import AsyncResult
@@ -20,17 +21,20 @@ app.config['UPLOAD_FOLDER'] = os.path.join(npu.STORAGE_PATH, 'uploads')
 # Centralized dictionary to hold the state of various simulated components
 system_state = {
     "temperature_c": 55.0,
-    "fan_speed_percent": 0,
+    "fan_speeds": {"case_fan": 0, "psu_fan": 0}, # Changed to a dictionary
     "diode_state": "off",
     "power_supply_state": "on"
 }
 
 # State file paths for controllers
-FAN_STATE_FILE = "/tmp/fan_speed.state"
 DIODE_STATE_FILE = "/tmp/diode_state.state"
 
 
 # --- Helper Functions ---
+def get_fan_state_file(fan_id):
+    """Returns the state file path for a given fan ID."""
+    return f"/tmp/fan_speed_{secure_filename(fan_id)}.state"
+
 def is_safe_path(path):
     """Security check to prevent directory traversal attacks."""
     requested_path = os.path.abspath(os.path.join(npu.STORAGE_PATH, path.lstrip('/')))
@@ -68,12 +72,31 @@ def get_system_health():
         "smart_attributes": {"Reallocated_Sector_Ct": 0, "Power_On_Hours": 1200},
         "errors": []
     }
-    # Return a combined state
-    return jsonify({
+    health_data = {
         "drives": [seagate_health], 
         "raid_arrays": [],
         "system_state": system_state
-    })
+    }
+
+    # Trigger NPU inference
+    try:
+        inference_payload = {
+            "model_name": "gemma-2b-int4.rknn",
+            "input_data": health_data
+        }
+        # Use the internal request context to call the inference endpoint
+        with app.test_request_context():
+            response = requests.post(f"http://127.0.0.1:{os.environ.get('PORT', 3177)}/api/npu/inference", json=inference_payload)
+            response.raise_for_status() # Raise an exception for bad status codes
+            task_id = response.json().get("task_id")
+            print(f"MAIN APP: Dispatched NPU inference task {task_id}")
+            health_data["inference_task_id"] = task_id
+    except requests.exceptions.RequestException as e:
+        print(f"MAIN APP: Failed to dispatch NPU task: {e}")
+        health_data["inference_error"] = str(e)
+
+    return jsonify(health_data)
+
 
 @app.route('/api/system/temperature', methods=['POST'])
 def system_temperature():
@@ -85,30 +108,38 @@ def system_temperature():
     system_state['temperature_c'] = temp
     print(f"MAIN APP: Received temperature update: {temp}°C")
 
-    # Reactive logic: if temp is critical, force the fan to 100%
-    if temp > 80.0 and system_state['fan_speed_percent'] < 100:
-        print("MAIN APP: CRITICAL TEMP DETECTED! Forcing fan to 100%.")
-        set_fan_speed(100)
-        
+    # Reactive logic: if temp is critical, force the main case fan to 100%
+    if temp > 80.0 and system_state['fan_speeds'].get('case_fan', 0) < 100:
+        print("MAIN APP: CRITICAL TEMP DETECTED! Forcing case_fan to 100%.")
+        set_fan_speed('case_fan', 100)
+            
     return jsonify({"status": "temperature_received"}), 200
 
 @app.route('/api/system/fan', methods=['GET', 'POST'])
 def system_fan():
-    """Controls the PWM fan simulator."""
+    """Controls the PWM fan simulators."""
     if request.method == 'POST':
-        speed = request.json.get('speed')
-        if speed is None or not isinstance(speed, int) or not 0 <= speed <= 100:
+        data = request.get_json()
+        fan_id = data.get('id')
+        speed = data.get('speed')
+
+        if not fan_id or speed is None:
+            return jsonify({"error": "Request must include 'id' and 'speed'."}), 400
+        if fan_id not in system_state['fan_speeds']:
+            return jsonify({"error": f"Fan with id '{fan_id}' not found."}), 404
+        if not isinstance(speed, int) or not 0 <= speed <= 100:
             return jsonify({"error": "Invalid speed. Must be an integer between 0 and 100."}), 400
         
-        set_fan_speed(speed)
-        return jsonify({"message": f"Fan speed set to {speed}%"}), 200
+        set_fan_speed(fan_id, speed)
+        return jsonify({"message": f"Fan '{fan_id}' speed set to {speed}%"}), 200
     
-    return jsonify({"fan_speed_percent": system_state['fan_speed_percent']})
+    return jsonify({"fan_speeds": system_state['fan_speeds']})
 
-def set_fan_speed(speed):
+def set_fan_speed(fan_id, speed):
     """Helper to update fan speed state and write to the state file."""
-    system_state['fan_speed_percent'] = speed
-    with open(FAN_STATE_FILE, 'w') as f:
+    system_state['fan_speeds'][fan_id] = speed
+    state_file = get_fan_state_file(fan_id)
+    with open(state_file, 'w') as f:
         f.write(str(speed))
 
 @app.route('/api/system/diode', methods=['GET', 'POST'])
@@ -182,15 +213,27 @@ def get_npu_result_route(task_id):
 # --- Main Application Runner ---
 def main():
     # Clean up old state files on start
-    for state_file in [FAN_STATE_FILE, DIODE_STATE_FILE]:
+    for fan_id in system_state['fan_speeds']:
+        state_file = get_fan_state_file(fan_id)
         if os.path.exists(state_file):
             os.remove(state_file)
+    if os.path.exists(DIODE_STATE_FILE):
+        os.remove(DIODE_STATE_FILE)
+
 
     print("--- Starting All Simulators ---")
+    # Start fan controllers
+    for fan_id in system_state['fan_speeds']:
+        try:
+            subprocess.Popen([".venv/bin/python", "fan_controller.py", "--fan-id", fan_id])
+            print(f"Launched fan_controller.py for '{fan_id}'.")
+        except FileNotFoundError:
+            print(f"ERROR: Could not find fan_controller.py.")
+
+    # Start other simulators
     simulators = [
         "overcurrent_simulator.py",
         "temperature_simulator.py",
-        "fan_controller.py",
         "diode_controller.py"
     ]
     for sim in simulators:
@@ -199,6 +242,7 @@ def main():
             print(f"Launched {sim}.")
         except FileNotFoundError:
             print(f"ERROR: Could not find {sim}. Make sure it exists.")
+
 
     print("\nReminder: Start Redis and the Celery worker in separate terminals.")
     print("  docker run -d -p 6379:6379 redis")

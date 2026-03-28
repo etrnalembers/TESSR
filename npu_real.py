@@ -2,7 +2,7 @@
 # This file contains the REAL implementation for the Rockchip NPU.
 
 import os
-# from rknnlite.api import RKNNLite # Use this when on actual hardware
+from rknnlite.api import RKNNLite # Use this when on actual hardware
 
 # --- Constants ---
 # This path will point to the INT4 quantized Gemma 2B model.
@@ -25,7 +25,7 @@ def get_npu_status():
     return {
         "npu_status": "active",
         "loaded_model": os.path.basename(QUANTIZED_MODEL_PATH),
-        "memory_usage_mb": 3800, # Placeholder for INT8, would be ~1900 for INT4
+        "memory_usage_mb": 1900, # Placeholder for INT4
         "performance_tops": 0.7 # Based on hardware specs
     }
 
@@ -45,16 +45,15 @@ def load_model(model_name=None):
 
     print(f"INFO: Loading quantized model from {QUANTIZED_MODEL_PATH}...")
     try:
-        # _rknn_lite = RKNNLite()
-        # ret = _rknn_lite.load_rknn(QUANTIZED_MODEL_PATH)
-        # if ret != 0:
-        #     print("ERROR: Failed to load RKNN model.")
-        #     _rknn_lite = None
-        #     return False, "Failed to load RKNN model file."
-        # print("INFO: Model loaded successfully.")
+        _rknn_lite = RKNNLite()
+        ret = _rknn_lite.load_rknn(QUANTIZED_MODEL_PATH)
+        if ret != 0:
+            print("ERROR: Failed to load RKNN model.")
+            _rknn_lite = None
+            return False, "Failed to load RKNN model file."
+        print("INFO: Model loaded successfully.")
         # This is where you would initialize the NPU context if needed.
-        # _rknn_lite.init_runtime()
-        pass # Placeholder for actual loading
+        _rknn_lite.init_runtime()
     except Exception as e:
         print(f"ERROR: An exception occurred while loading the model: {e}")
         _rknn_lite = None
@@ -66,7 +65,7 @@ def unload_model(model_name=None):
     """Releases the model from memory."""
     global _rknn_lite
     if _rknn_lite is not None:
-        # _rknn_lite.release()
+        _rknn_lite.release()
         _rknn_lite = None
         print("INFO: Model unloaded.")
     return True, "Model unloaded."
@@ -88,18 +87,11 @@ def run_inference(model_name, input_data):
     #    (e.g., tokenization for a language model).
     
     # 2. Run the inference.
-    #    outputs = _rknn_lite.inference(inputs=[pre_processed_data])
+    outputs = _rknn_lite.inference(inputs=[input_data])
     
     # 3. Post-process the output to a human-readable format.
     
-    # Placeholder for the actual inference result
-    mock_result = {
-        "prediction": "degraded",
-        "confidence": 0.85,
-        "recommendation": "Check disk 2 immediately."
-    }
-    
-    return mock_result, "Inference completed successfully."
+    return outputs, "Inference completed successfully."
 
 def get_available_models():
     """Returns a list of models available for the real NPU."""
