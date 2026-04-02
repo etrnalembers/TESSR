@@ -31,16 +31,16 @@ sudo usermod -aG docker $USER
     cd your-repository
     ```
 
-2.  **Build the Docker image:**
-    This command reads the `Dockerfile` and creates a container image with all dependencies.
+2.  **Start the Mock container (For Development/PC):**
+    This builds the `mock-env` profile, completely sandboxed from physical hardware.
     ```bash
-    docker-compose build
+    docker compose --profile dev up -d --build
     ```
 
-3.  **Start the application container:**
-    This command starts the application in detached mode (`-d`).
+3.  **Start the Real container (For Orange Pi/Production):**
+    This builds the `real-env` profile with `privileged` access to toggle GPIO pins.
     ```bash
-    docker-compose up -d
+    docker compose --profile prod up -d --build
     ```
 
 ### 1.3. Management Commands
@@ -126,18 +126,36 @@ Use this method for actively developing the application code.
 
 ---
 
-## 4. Transitioning to Real Hardware
+## 4. Hardware Wiring & Optocoupler Architecture
 
-To move from the mock API to real hardware control, you will need to replace the `TODO` and `PRETENDING` sections in the code.
+TESSR utilizes a **4N35 Optocoupler** to isolate the Orange Pi's logic board from the 300W PSU's high-current potential preventing backwash inductive loads.
 
-### 4.1. Power Control (Optocoupler)
+### 4.1. 4N35 Wiring Instructions
+- **Trigger End (Orange Pi):**
+  - **Pin 17 (3.3V+)**: Needs to be wired to the 4N35 Anode (Pin 1) with an appropriate current-limiting resistor.
+  - **Pin 20 (GND)**: Wire to the 4N35 Cathode (Pin 2).
+  - *Note: Ensure your `PSU_GPIO_PIN` env var points to the software-switchable GPIO number that supplies the 3.3V+ logic.*
+- **Acceptor End (PSU):**
+  - Uses isolated grounds on the PSU polarity acceptor, triggered via its own motherboard headers.
+  - Connect the ATX **PS_ON# (Green wire)** to the Collector (Pin 5) and the ATX **GND (Black wire)** to the Emitter (Pin 4).
+- **Logic Level:** Sending a `HIGH` (1) to the GPIO turns the PSU **ON**.
 
-- **File:** `main.py`
-- **Function:** `power_array()`
-- **Action:** Replace the `print(f"MOCK: ...")` line with code that controls the GPIO pin connected to your optocoupler. You would typically use a library like `RPi.GPIO` or a specific library for the Orange Pi's GPIO.
+### 4.2. Troubleshooting the Optocoupler
+1. Connect a multimeter in continuity mode across the 4N35 Collector (Pin 5) and Emitter (Pin 4) *without* the PSU attached.
+2. Ensure you are running the `prod` Docker profile on the Orange Pi.
+3. Trigger the PSU via the testing command:
+   ```bash
+   curl -X POST -H "Content-Type: application/json" -d '{"state": "on"}' http://localhost:3177/api/power/array
+   ```
+4. **Expected Result:** Multimeter should beep (closed circuit).
+5. Trigger it off:
+   ```bash
+   curl -X POST -H "Content-Type: application/json" -d '{"state": "off"}' http://localhost:3177/api/power/array
+   ```
+6. **Expected Result:** Multimeter stops beeping (open circuit).
+7. If it fails: Verify `/sys/class/gpio/` has correctly exported the pin designated in `PSU_GPIO_PIN`.
 
-### 4.2. NPU Integration (Orange Pi)
-
-- **File:** `npu_manager.py`
-- **Functions:** `load_model()`, `unload_model()`, `run_inference()`
-- **Action:** In each function, remove the `if IS_ORANGE_PI:` block that points to mock logic and uncomment/implement the `rknn` (RKNNLite) code. You will need to have the Rockchip Neural Network Toolkit libraries installed and correctly configured on your Arch Linux system for this to work.
+### 4.3. Simulating Fault Scenarios
+You can dry-run emergency fallbacks to verify the container handles sudden active-low shutdowns:
+- **Power Surge Mock:** `curl -X POST -H "Content-Type: application/json" -d '{"state": "power_surge"}' http://localhost:3177/api/power/array`
+- **Power Loss Mock:** `curl -X POST -H "Content-Type: application/json" -d '{"state": "power_loss"}' http://localhost:3177/api/power/array`

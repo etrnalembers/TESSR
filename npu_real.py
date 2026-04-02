@@ -2,7 +2,13 @@
 # This file contains the REAL implementation for the Rockchip NPU.
 
 import os
-from rknnlite.api import RKNNLite # Use this when on actual hardware
+import logging
+
+try:
+    from rknnlite.api import RKNNLite # Use this when on actual hardware
+except ImportError:
+    RKNNLite = None
+    logging.warning("Safe-Boot Warning: rknnlite not found. NPU Sensors bypassed for initial PSU stress-test run.")
 
 # --- Constants ---
 # This path will point to the INT4 quantized Gemma 2B model.
@@ -17,6 +23,11 @@ _rknn_lite = None
 def get_npu_status():
     """Returns the detailed status of the NPU."""
     global _rknn_lite
+    
+    # SAFE-BOOT: We bypass full sensor checks while testing the PSU optocoupler
+    if RKNNLite is None:
+        return {"npu_status": "bypassed_safe_mode", "loaded_model": None, "message": "NPU bypassed for PSU stress test."}
+        
     if _rknn_lite is None:
         # In a real scenario, you might query the driver for temperature, clock speed, etc.
         return {"npu_status": "available", "loaded_model": None}

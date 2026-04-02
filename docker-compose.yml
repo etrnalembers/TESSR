@@ -1,32 +1,38 @@
 version: '3.8'
 
 services:
-  # This is the service for our Flask application
-  flask-app:
-    # Tells Docker Compose to build the image from the Dockerfile in the current directory
-    build: .
-    # Names the container for easier reference
-    container_name: flask-storage-manager
-    # The ports mapping: <host_port>:<container_port>
-    # This exposes our Flask app's port 3177 to the host machine's port 3177
+  # The Mock Manager (runs on your PC / development environment)
+  tessr-mock:
+    build: 
+      context: .
+      target: mock-env
+    profiles: ["dev"]
+    container_name: flask-storage-manager-mock
     ports:
       - "3177:3177"
-    # This mounts the 'storage_mock' directory on the host to /app/storage_mock in the container
-    # This ensures that any data written by the app inside the container persists on the host machine
     volumes:
       - ./storage_mock:/app/storage_mock
-    # Sets the restart policy. 'unless-stopped' means it will restart unless manually stopped.
     restart: unless-stopped
-    # You could add environment variables here for configuration
-    # environment:
-    #   - FLASK_ENV=production
 
-  # --- Example of another service (e.g., a database or another microservice) ---
-  # another-service:
-  #   image: "redis:alpine"
-  #   container_name: redis-cache
-  #   # This service can be reached from the 'flask-app' container by the hostname 'another-service'
+  # The Real Manager (runs on the Orange Pi)
+  tessr-real:
+    build: 
+      context: .
+      target: real-env
+    profiles: ["prod"]
+    container_name: flask-storage-manager-real
+    ports:
+      - "3177:3177"
+    volumes:
+      - ./storage_real:/app/storage_real
+    restart: unless-stopped
+    # Privileged is necessary to export and toggle physical GPIO via sysfs (/sys/class/gpio)
+    privileged: true
+    environment:
+      # Optional: Explicitly define which GPIO to use. Pin 17 = 3.3V power normally, 
+      # so if you meant a switchable logic pin, define its system GPIO number here.
+      - PSU_GPIO_PIN=17
 
 volumes:
-  # This explicitly defines the volume we are using, making it manageable by Docker commands
   storage_mock:
+  storage_real:

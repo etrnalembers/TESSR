@@ -1,21 +1,22 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim
-
-# Set the working directory in the container
+# --- Base Stage ---
+# Setting up standard python env
+FROM python:3.10-slim as base
 WORKDIR /app
-
-# Copy the requirements file and install dependencies
-# This is done in a separate step to leverage Docker's layer caching.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application's source code
 COPY . .
-
-# Make port 3177 available to the world outside this container
 EXPOSE 3177
 
-# Define the command to run the application using Gunicorn
-# This is a production-ready WSGI server.
-# It runs the 'app' object from the 'main.py' file.
+# --- Mock Environment Stage ---
+# Used for local development and sandbox simulation
+FROM base as mock-env
+# Default to running Gunicorn (mock mode depends on hardware check auto-failing)
+CMD ["gunicorn", "--bind", "0.0.0.0:3177", "main:app"]
+
+# --- Real Environment Stage ---
+# Used for Orange Pi deployment, toggling physical GPIOs
+FROM base as real-env
+# Here you would install additional hardware dependencies if needed.
+# Sysfs mapping doesn't strictly need extra pip packages, but if libgpiod is attached later:
+# RUN apt-get update && apt-get install -y gpiod
 CMD ["gunicorn", "--bind", "0.0.0.0:3177", "main:app"]

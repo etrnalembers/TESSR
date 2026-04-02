@@ -11,6 +11,7 @@ from celery.result import AsyncResult
 
 # Import the NPU manager and the Celery task
 import npu_manager as npu
+import psu_controller
 from tasks import celery, run_npu_inference_task
 
 # --- Configuration ---
@@ -160,14 +161,35 @@ def system_diode():
 
 @app.route('/api/power/array', methods=['GET', 'POST'])
 def power_array():
-    """Controls the mock power supply for the drive array."""
+    """Controls the power supply for the drive array (Real and Mock)."""
     if request.method == 'POST':
         state = request.json.get('state')
-        if state in ['on', 'off']:
+        
+        # Valid states: physically turning it on/off, or mocking emergency surge/loss
+        if state in ['on', 'off', 'power_surge', 'power_loss']:
             system_state['power_supply_state'] = state
-            print(f"MOCK: Optocoupler triggered to turn power supply {state}")
-            return jsonify({"message": f"Power supply turning {state}"}), 200
+            
+            if npu.IS_REAL_MODE:
+                # We are running with physical hardware access
+                if state == 'on':
+                    psu_controller.turn_on_psu()
+                    print("REAL: Optocoupler triggered to turn power supply ON (HIGH)")
+                elif state == 'off':
+                    psu_controller.turn_off_psu()
+                    print("REAL: Optocoupler triggered to turn power supply OFF (LOW)")
+                elif state in ['power_surge', 'power_loss']:
+                    psu_controller.trigger_emergency_fallback()
+                    print(f"REAL: Emergency Fallback triggered due to {state}. Active LOW shutdown initiated.")
+            else:
+                # We are in the sandbox/mock environment
+                print(f"MOCK: Optocoupler mock-triggered. State changed to: {state}")
+                if state in ['power_surge', 'power_loss']:
+                    print(f"MOCK: Simulating emergency fault scenario: {state}")
+            
+            return jsonify({"message": f"Power supply set to {state}"}), 200
+        
         return jsonify({"error": "Invalid state"}), 400
+    
     return jsonify({"power_supply_state": system_state['power_supply_state']})
 
 # --- NPU API (Asynchronous) ---
@@ -220,6 +242,9 @@ def main():
     if os.path.exists(DIODE_STATE_FILE):
         os.remove(DIODE_STATE_FILE)
 
+    if npu.IS_REAL_MODE:
+        print("--- Initializing Hardware Controllers ---")
+        psu_controller.initialize()
 
     print("--- Starting All Simulators ---")
     # Start fan controllers
